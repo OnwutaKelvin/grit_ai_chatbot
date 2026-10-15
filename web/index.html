@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRIT AI Assistant</title>
+<style>
+  :root { --brand:#1f4fd8; --bg:#f4f6fb; --card:#fff; --text:#1b2333; --muted:#6b7488; --line:#e3e7f0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#10131a; --card:#181c26; --text:#e8ecf5; --muted:#8f99ad; --line:#2a3040; }
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body { font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text);
+         display:flex; justify-content:center; }
+  .app { width:100%; max-width:720px; height:100%; display:flex; flex-direction:column; background:var(--card);
+         border-left:1px solid var(--line); border-right:1px solid var(--line); }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:17px; }
+  header p { margin:2px 0 0; font-size:13px; color:var(--muted); }
+  #log { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
+  .msg { max-width:85%; padding:10px 14px; border-radius:14px; word-wrap:break-word; }
+  .msg p { margin:0 0 6px; } .msg p:last-child { margin:0; }
+  .msg ul { margin:4px 0 6px; padding-left:20px; }
+  .user { align-self:flex-end; background:var(--brand); color:#fff; border-bottom-right-radius:4px; }
+  .bot  { align-self:flex-start; background:var(--bg); border:1px solid var(--line); border-bottom-left-radius:4px; }
+  .fb { margin-top:6px; display:flex; gap:6px; }
+  .fb button { border:1px solid var(--line); background:transparent; border-radius:8px; padding:2px 8px;
+               cursor:pointer; font-size:14px; color:var(--text); }
+  .fb button:disabled { opacity:.45; cursor:default; }
+  .notice { align-self:center; font-size:13px; color:var(--muted); text-align:center; max-width:90%; }
+  .handoff { align-self:center; background:#fff7e0; color:#5b4600; border:1px solid #f0d98a; border-radius:10px;
+             padding:8px 12px; font-size:14px; }
+  .dots span { display:inline-block; width:7px; height:7px; margin:0 2px; border-radius:50%; background:var(--muted);
+               animation:b 1.2s infinite; }
+  .dots span:nth-child(2){animation-delay:.15s} .dots span:nth-child(3){animation-delay:.3s}
+  @keyframes b { 0%,60%,100%{opacity:.25} 30%{opacity:1} }
+  form { display:flex; gap:8px; padding:12px; border-top:1px solid var(--line); }
+  textarea { flex:1; resize:none; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit;
+             background:var(--card); color:var(--text); max-height:120px; }
+  textarea:focus { outline:2px solid var(--brand); outline-offset:-1px; }
+  #send { border:0; border-radius:10px; padding:0 18px; background:var(--brand); color:#fff; font:inherit; cursor:pointer; }
+  #send:disabled { opacity:.5; cursor:default; }
+  .small { padding:0 12px 10px; font-size:12px; color:var(--muted); text-align:center; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>GRIT AI Assistant</h1>
+    <p>Ask about our AI agents and automation services</p>
+  </header>
+  <div id="log" role="log" aria-live="polite">
+    <div class="notice">You're chatting with GRIT AI's AI assistant, not a person. You can ask for a human at any time.</div>
+    <div class="msg bot"><p>Hi! I can answer questions about what GRIT AI builds, how projects work, integrations, and security. What would you like to know?</p></div>
+  </div>
+  <form id="form">
+    <textarea id="input" rows="1" maxlength="1000" placeholder="Type your question..." aria-label="Your message"></textarea>
+    <button id="send" type="submit">Send</button>
+  </form>
+  <div class="small">Please don't share passwords or payment details in this chat.</div>
+</div>
+
+<script>
+  // If this page is hosted on a different site than the server, set the server's address here,
+  // e.g. "https://chat.yourcompany.com". Leave empty when the server serves this page itself.
+  const API_BASE = "";
+
+  const log = document.getElementById("log"), form = document.getElementById("form"),
+        input = document.getElementById("input"), sendBtn = document.getElementById("send");
+  let sessionId = null, busy = false;
+  try { sessionId = sessionStorage.getItem("grit_session"); } catch (e) {}
+
+  // Escape first, then apply minimal formatting (bold, bullet lists), so replies can never inject HTML.
+  function render(text) {
+    const esc = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    let html = "", inList = false;
+    for (const line of esc.split("\n")) {
+      const m = line.match(/^\s*[-*]\s+(.*)/);
+      if (m) { if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + m[1] + "</li>"; }
+      else { if (inList) { html += "</ul>"; inList = false; } if (line.trim()) html += "<p>" + line + "</p>"; }
+    }
+    if (inList) html += "</ul>";
+    return html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  }
+
+  function add(cls, html) {
+    const el = document.createElement("div");
+    el.className = cls; el.innerHTML = html;
+    log.appendChild(el); log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function addFeedback(botEl, messageId) {
+    const box = document.createElement("div");
+    box.className = "fb";
+    for (const [rating, icon, label] of [["up", "\u{1F44D}", "Helpful"], ["down", "\u{1F44E}", "Not helpful"]]) {
+      const b = document.createElement("button");
+      b.textContent = icon; b.title = label; b.setAttribute("aria-label", label);
+      b.onclick = () => {
+        box.querySelectorAll("button").forEach(x => x.disabled = true);
+        fetch(API_BASE + "/feedback", { method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message_id: messageId, rating }) }).catch(() => {});
+      };
+      box.appendChild(b);
+    }
+    botEl.appendChild(box);
+  }
+
+  async function send() {
+    const text = input.value.trim();
+    if (!text || busy) return;
+    busy = true; sendBtn.disabled = true;
+    const el = document.createElement("div"); el.className = "msg user"; el.textContent = text;
+    log.appendChild(el); input.value = ""; input.style.height = "auto";
+    const typing = add("msg bot", '<span class="dots"><span></span><span></span><span></span></span>');
+    try {
+      const res = await fetch(API_BASE + "/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ message: text, session_id: sessionId }) });
+      const data = await res.json().catch(() => ({}));
+      typing.remove();
+      if (!res.ok) {
+        add("msg bot", render(typeof data.detail === "string" ? data.detail
+            : "Sorry, something went wrong. Please try again or contact our team."));
+      } else {
+        sessionId = data.session_id;
+        try { sessionStorage.setItem("grit_session", sessionId); } catch (e) {}
+        const botEl = add("msg bot", render(data.reply));
+        addFeedback(botEl, data.message_id);
+        if (data.handoff) add("handoff", "A member of our team has been notified and will follow up.");
+        if (data.lead_saved) add("handoff", "Thanks! Your details have been passed to our team.");
+      }
+    } catch (e) {
+      typing.remove();
+      add("msg bot", render("I can't reach the server right now. Please try again in a moment."));
+    }
+    busy = false; sendBtn.disabled = false; input.focus();
+  }
+
+  form.addEventListener("submit", e => { e.preventDefault(); send(); });
+  input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; });
+</script>
+</body>
+</html>
